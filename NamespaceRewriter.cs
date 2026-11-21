@@ -1,7 +1,6 @@
 namespace P3k.FF7R.Editor.Tools
 {
    using System;
-   using System.Collections.Generic;
    using System.Text;
    using System.Text.RegularExpressions;
 
@@ -11,12 +10,6 @@ namespace P3k.FF7R.Editor.Tools
    ///</summary>
    internal static class NamespaceRewriter
    {
-      private static readonly Regex NamespaceDeclaration = new(@"\bnamespace\s+(?<name>[\p{L}_@][\w.@]*)\s*[{;]");
-
-      private static readonly Regex UsingDirective = new(
-         @"^[ \t]*(global\s+)?using\s+[^;(){}]*;",
-         RegexOptions.Multiline);
-
       private static readonly Regex AssemblyAttribute = new(
          @"^[ \t]*\[\s*(assembly|module)\s*:",
          RegexOptions.Multiline);
@@ -37,7 +30,10 @@ namespace P3k.FF7R.Editor.Tools
          note = null;
 
          SourceMasker.Mask(text, out var masked, out var insideString);
-         var declarations = KeepTopLevel(NamespaceDeclaration.Matches(masked), masked);
+         var declarations = SourceText.KeepAtDepth(
+            DeclarationReader.NamespaceDeclaration.Matches(masked),
+            masked,
+            0);
 
          if (declarations.Count > 1)
          {
@@ -97,7 +93,7 @@ namespace P3k.FF7R.Editor.Tools
          }
 
          var bodyStart = FindBodyStart(text, masked, out var hasUsings);
-         if (bodyStart < 0 || IsBlank(masked, bodyStart, masked.Length))
+         if (bodyStart < 0 || SourceText.IsBlank(masked, bodyStart, masked.Length))
          {
             note = "skipped, it has no code";
             return false;
@@ -142,33 +138,17 @@ namespace P3k.FF7R.Editor.Tools
       ///</summary>
       private static int FindBodyStart(string text, string masked, out bool hasUsings)
       {
-         var usings = KeepTopLevel(UsingDirective.Matches(masked), masked);
+         var usings = SourceText.KeepAtDepth(DeclarationReader.UsingDirective.Matches(masked), masked, 0);
          hasUsings = usings.Count > 0;
 
          if (!hasUsings)
          {
-            return StartOfFirstCodeLine(masked);
+            return SourceText.StartOfFirstCodeLine(masked);
          }
 
          var lastUsing = usings[usings.Count - 1];
-         return SkipClosingEndifs(text, StartOfNextLine(text, lastUsing.Index + lastUsing.Length));
-      }
-
-      ///<summary>
-      /// Moves past #endif and #endregion lines that directly follow the usings, so they are not cut in half.
-      ///</summary>
-      private static int SkipClosingEndifs(string text, int position)
-      {
-         while (true)
-         {
-            var nextLine = SkipBlankLines(text, position);
-            if (nextLine >= text.Length || !IsClosingDirective(text, nextLine))
-            {
-               return position;
-            }
-
-            position = StartOfNextLine(text, nextLine);
-         }
+         var lineAfterUsing = SourceText.StartOfNextLine(text, lastUsing.Index + lastUsing.Length);
+         return SourceText.SkipClosingDirectives(text, lineAfterUsing);
       }
 
       ///<summary>
@@ -179,17 +159,19 @@ namespace P3k.FF7R.Editor.Tools
       {
          var unmatchedClosers = 0;
 
-         for (var lineStart = bodyStart; lineStart < text.Length; lineStart = StartOfNextLine(text, lineStart))
+         var lineStart = bodyStart;
+         while (lineStart < text.Length)
          {
-            unmatchedClosers += IsClosingDirective(text, lineStart) ? 1 : 0;
-            unmatchedClosers -= IsOpeningDirective(text, lineStart) ? 1 : 0;
+            unmatchedClosers += SourceText.IsClosingDirective(text, lineStart) ? 1 : 0;
+            unmatchedClosers -= SourceText.IsOpeningDirective(text, lineStart) ? 1 : 0;
+            lineStart = SourceText.StartOfNextLine(text, lineStart);
          }
 
          var bodyEnd = text.Length;
          while (unmatchedClosers-- > 0)
          {
-            var lastLine = StartOfLastNonBlankLine(text, bodyEnd);
-            if (lastLine < 0 || !IsClosingDirective(text, lastLine))
+            var lastLine = SourceText.StartOfLastNonBlankLine(text, bodyEnd);
+            if (lastLine < 0 || !SourceText.IsClosingDirective(text, lastLine))
             {
                break;
             }
@@ -210,9 +192,9 @@ namespace P3k.FF7R.Editor.Tools
 
          for (var lineStart = start; lineStart < end;)
          {
-            var lineEnd = Math.Min(StartOfNextLine(text, lineStart), end);
+            var lineEnd = Math.Min(SourceText.StartOfNextLine(text, lineStart), end);
 
-            if (!IsBlank(text, lineStart, lineEnd) && !insideString[lineStart])
+            if (!SourceText.IsBlank(text, lineStart, lineEnd) && !insideString[lineStart])
             {
                builder.Append(indent);
             }
@@ -222,143 +204,6 @@ namespace P3k.FF7R.Editor.Tools
          }
 
          return builder.ToString();
-      }
-
-      ///<summary>
-      /// Keeps only the matches that are not inside any braces.
-      ///</summary>
-      private static List<Match> KeepTopLevel(MatchCollection matches, string masked)
-      {
-         var topLevel = new List<Match>();
-         var depth = 0;
-         var scannedUpTo = 0;
-
-         foreach (Match match in matches)
-         {
-            for (var position = scannedUpTo; position < match.Index; position++)
-            {
-               depth += masked[position] == '{' ? 1 : masked[position] == '}' ? -1 : 0;
-            }
-
-            scannedUpTo = match.Index;
-            if (depth == 0)
-            {
-               topLevel.Add(match);
-            }
-         }
-
-         return topLevel;
-      }
-
-      ///<summary>
-      /// Index of the first character of the line after the one holding index, or the text length on the last line.
-      ///</summary>
-      private static int StartOfNextLine(string text, int index)
-      {
-         var newlineIndex = text.IndexOf('\n', index);
-         return newlineIndex < 0 ? text.Length : newlineIndex + 1;
-      }
-
-      ///<summary>
-      /// Start of the line that holds the first non white space character, or -1 when there is none.
-      ///</summary>
-      private static int StartOfFirstCodeLine(string masked)
-      {
-         for (var index = 0; index < masked.Length; index++)
-         {
-            if (!char.IsWhiteSpace(masked[index]))
-            {
-               return masked.LastIndexOf('\n', index) + 1;
-            }
-         }
-
-         return -1;
-      }
-
-      ///<summary>
-      /// Skips whole blank lines from position and returns the start of the first line that has content.
-      ///</summary>
-      private static int SkipBlankLines(string text, int position)
-      {
-         while (position < text.Length)
-         {
-            var nextLine = StartOfNextLine(text, position);
-            if (!IsBlank(text, position, nextLine))
-            {
-               break;
-            }
-
-            position = nextLine;
-         }
-
-         return position;
-      }
-
-      ///<summary>
-      /// Start of the last line before end that has content, or -1 when every line is blank.
-      ///</summary>
-      private static int StartOfLastNonBlankLine(string text, int end)
-      {
-         var lineEnd = end;
-
-         while (lineEnd > 0)
-         {
-            var lineStart = lineEnd == 1 ? 0 : text.LastIndexOf('\n', lineEnd - 2) + 1;
-            if (!IsBlank(text, lineStart, lineEnd))
-            {
-               return lineStart;
-            }
-
-            lineEnd = lineStart;
-         }
-
-         return -1;
-      }
-
-      ///<summary>
-      /// Tells whether the line starting at lineStart is an #if or #region.
-      ///</summary>
-      private static bool IsOpeningDirective(string text, int lineStart)
-      {
-         return LineStartsWith(text, lineStart, "#if") || LineStartsWith(text, lineStart, "#region");
-      }
-
-      ///<summary>
-      /// Tells whether the line starting at lineStart is an #endif or #endregion.
-      ///</summary>
-      private static bool IsClosingDirective(string text, int lineStart)
-      {
-         return LineStartsWith(text, lineStart, "#endif") || LineStartsWith(text, lineStart, "#endregion");
-      }
-
-      ///<summary>
-      /// Tells whether the line starting at lineStart begins, after any indent, with the given token.
-      ///</summary>
-      private static bool LineStartsWith(string text, int lineStart, string token)
-      {
-         var index = lineStart;
-         while (index < text.Length && (text[index] == ' ' || text[index] == '\t'))
-         {
-            index++;
-         }
-
-         return string.CompareOrdinal(text, index, token, 0, token.Length) == 0;
-      }
-
-      ///<summary>
-      /// Tells whether every character from start up to end is white space.
-      ///</summary>
-      private static bool IsBlank(string text, int start, int end)
-      {
-         for (var index = start; index < end; index++)
-         {
-            if (!char.IsWhiteSpace(text[index]))
-            {
-               return false;
-            }
-         }
-
-         return true;
       }
    }
 }
