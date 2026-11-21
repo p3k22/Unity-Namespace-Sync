@@ -49,7 +49,7 @@ namespace P3k.FF7R.Editor.Tools
             _log.Insert(
                0,
                $"{prefix}{scannedCount} scanned, {changedCount} namespaces changed, {skippedCount} skipped, "
-               + $"{referenceCount} other files had references updated");
+               + $"{referenceCount} files had usings or qualified names updated");
             return _log;
          }
          finally
