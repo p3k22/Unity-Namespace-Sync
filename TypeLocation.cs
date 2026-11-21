@@ -1,4 +1,4 @@
-namespace P3k.FF7R.Editor.Tools
+namespace P3k.FF7R.Editor.Tools.NamespaceSync
 {
    ///<summary>
    /// One top level type and the namespace it lived in before the run and the one it has after it.

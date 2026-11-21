@@ -1,4 +1,4 @@
-namespace P3k.FF7R.Editor.Tools
+namespace P3k.FF7R.Editor.Tools.NamespaceSync
 {
    using System.Collections.Generic;
    using System.IO;
